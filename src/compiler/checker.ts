@@ -4104,7 +4104,7 @@ namespace ts {
                 type = getTypeWithFacts(type, TypeFacts.NEUndefined);
             }
             return declaration.initializer ?
-                getUnionType([type, checkExpressionCached(declaration.initializer)], UnionReduction.Subtype) :
+                getUnionType2(type, checkExpressionCached(declaration.initializer)) :
                 type;
         }
 
@@ -5768,7 +5768,7 @@ namespace ts {
 
         function unionSpreadIndexInfos(info1: IndexInfo, info2: IndexInfo): IndexInfo {
             return info1 && info2 && createIndexInfo(
-                getUnionType([info1.type, info2.type]), info1.isReadonly || info2.isReadonly);
+                getUnionType2Literal(info1.type, info2.type), info1.isReadonly || info2.isReadonly);
         }
 
         function includeMixinType(type: Type, types: Type[], index: number): Type {
@@ -6164,7 +6164,7 @@ namespace ts {
         }
 
         function getDefaultConstraintOfConditionalType(type: ConditionalType) {
-            return getUnionType([getTrueTypeFromConditionalType(type), getFalseTypeFromConditionalType(type)]);
+            return getUnionType2Literal(getTrueTypeFromConditionalType(type), getFalseTypeFromConditionalType(type));
         }
 
         function getConstraintOfDistributiveConditionalType(type: ConditionalType): Type {
@@ -7783,6 +7783,20 @@ namespace ts {
             }
         }
 
+        //TODO: specialize if neither 'a' nor 'b' is a union -- just check for subtype, if not, sort list and make a union
+        function getUnionType2Literal(a: Type, b: Type): Type {
+            const typeSet: Type[] = [];
+            let includes = addTypeToUnion(typeSet, 0, a);
+            includes = addTypeToUnion(typeSet, includes, b);
+            return foo(typeSet, includes, unionReduction);
+        }
+        function getUnionType2Sub(a: Type, b: Type) {
+            const typeSet: Type[] = [];
+            let includes = addTypeToUnion(typeSet, 0, a);
+            includes = addTypeToUnion(typeSet, includes, b);
+            return foo(typeSet, includes, UnionReduction.Subtype);
+        }
+
         // We sort and deduplicate the constituent types based on object identity. If the subtypeReduction
         // flag is specified we also reduce the constituent type set to only include types that aren't subtypes
         // of other types. Subtype reduction is expensive for large union types and is possible only when union
@@ -7799,6 +7813,10 @@ namespace ts {
             }
             const typeSet: Type[] = [];
             const includes = addTypesToUnion(typeSet, 0, types);
+            return foo(typeSet, includes, unionReduction, aliasSymbol, aliasTypeArguments);
+        }
+
+        function foo(typeSet: Type[], includes: TypeIncludes, unionReduction: UnionReduction, aliasSymbol?: Symbol, aliasTypeArguments?: Type[]): Type { //name
             if (includes & TypeIncludes.Any) {
                 return includes & TypeIncludes.Wildcard ? wildcardType : anyType;
             }
@@ -8150,10 +8168,9 @@ namespace ts {
                             regularTypes.push(t);
                         }
                     }
-                    return getUnionType([
+                    return getUnionType2Literal(
                         getIndexedAccessType(getIntersectionType(regularTypes), type.indexType),
-                        getIntersectionType(stringIndexTypes)
-                    ]);
+                        getIntersectionType(stringIndexTypes));
                 }
                 // Given an indexed access type T[K], if T is an intersection containing one or more generic types and one or
                 // more mapped types with a template type `never`, '(U & V & { [P in T]: never })[K]', return a
@@ -8273,7 +8290,7 @@ namespace ts {
             }
             // Return union of trueType and falseType for 'any' since it matches anything
             if (checkType.flags & TypeFlags.Any) {
-                return getUnionType([instantiateType(root.trueType, combinedMapper || mapper), instantiateType(root.falseType, mapper)]);
+                return getUnionType2Literal(instantiateType(root.trueType, combinedMapper || mapper), instantiateType(root.falseType, mapper));
             }
             // Instantiate the extends type including inferences for 'infer T' type parameters
             const inferredExtendsType = combinedMapper ? instantiateType(root.extendsType, combinedMapper) : extendsType;
@@ -8446,7 +8463,7 @@ namespace ts {
                         const declarations: Declaration[] = concatenate(leftProp.declarations, rightProp.declarations);
                         const flags = SymbolFlags.Property | (leftProp.flags & SymbolFlags.Optional);
                         const result = createSymbol(flags, leftProp.escapedName);
-                        result.type = getUnionType([getTypeOfSymbol(leftProp), getTypeWithFacts(rightType, TypeFacts.NEUndefined)]);
+                        result.type = getUnionType2Literal(getTypeOfSymbol(leftProp), getTypeWithFacts(rightType, TypeFacts.NEUndefined));
                         result.leftSpread = leftProp;
                         result.rightSpread = rightProp;
                         result.declarations = declarations;
@@ -11085,14 +11102,14 @@ namespace ts {
         function getNullableType(type: Type, flags: TypeFlags): Type {
             const missing = (flags & ~type.flags) & (TypeFlags.Undefined | TypeFlags.Null);
             return missing === 0 ? type :
-                missing === TypeFlags.Undefined ? getUnionType([type, undefinedType]) :
-                missing === TypeFlags.Null ? getUnionType([type, nullType]) :
+                missing === TypeFlags.Undefined ? getUnionType2Literal(type, undefinedType) :
+                missing === TypeFlags.Null ? getUnionType2Literal(type, nullType) :
                 getUnionType([type, undefinedType, nullType]);
         }
 
         function getOptionalType(type: Type): Type {
             Debug.assert(strictNullChecks);
-            return type.flags & TypeFlags.Undefined ? type : getUnionType([type, undefinedType]);
+            return type.flags & TypeFlags.Undefined ? type : getUnionType2Literal(type, undefinedType);
         }
 
         function getNonNullableType(type: Type): Type {
@@ -12280,7 +12297,7 @@ namespace ts {
         function getTypeWithDefault(type: Type, defaultExpression: Expression) {
             if (defaultExpression) {
                 const defaultType = getTypeOfExpression(defaultExpression);
-                return getUnionType([getTypeWithFacts(type, TypeFacts.NEUndefined), defaultType]);
+                return getUnionType2Literal(getTypeWithFacts(type, TypeFacts.NEUndefined), defaultType);
             }
             return type;
         }
@@ -12570,7 +12587,7 @@ namespace ts {
         // array type.
         function addEvolvingArrayElementType(evolvingArrayType: EvolvingArrayType, node: Expression): EvolvingArrayType {
             const elementType = getBaseTypeOfLiteralType(getContextFreeTypeOfExpression(node));
-            return isTypeSubsetOf(elementType, evolvingArrayType.elementType) ? evolvingArrayType : getEvolvingArrayType(getUnionType([evolvingArrayType.elementType, elementType]));
+            return isTypeSubsetOf(elementType, evolvingArrayType.elementType) ? evolvingArrayType : getEvolvingArrayType(getUnionType2Literal(evolvingArrayType.elementType, elementType));
         }
 
         function createFinalArrayType(elementType: Type) {
@@ -13161,7 +13178,7 @@ namespace ts {
                     return caseType;
                 }
                 const defaultType = filterType(type, t => !(isUnitType(t) && contains(switchTypes, getRegularTypeOfLiteralType(t))));
-                return caseType.flags & TypeFlags.Never ? defaultType : getUnionType([caseType, defaultType]);
+                return caseType.flags & TypeFlags.Never ? defaultType : getUnionType2Literal(caseType, defaultType);
             }
 
             function narrowTypeByInstanceof(type: Type, expr: BinaryExpression, assumeTrue: boolean): Type {
@@ -15729,9 +15746,7 @@ namespace ts {
 
         function getJsxStatelessElementTypeAt(location: Node): Type {
             const jsxElementType = getJsxElementTypeAt(location);
-            if (jsxElementType) {
-                return getUnionType([jsxElementType, nullType]);
-            }
+            return jsxElementType && getUnionType2Literal(jsxElementType, nullType);
         }
 
         /**
@@ -19266,11 +19281,11 @@ namespace ts {
                     return checkInExpression(left, right, leftType, rightType);
                 case SyntaxKind.AmpersandAmpersandToken:
                     return getTypeFacts(leftType) & TypeFacts.Truthy ?
-                        getUnionType([extractDefinitelyFalsyTypes(strictNullChecks ? leftType : getBaseTypeOfLiteralType(rightType)), rightType]) :
+                        getUnionType2Literal(extractDefinitelyFalsyTypes(strictNullChecks ? leftType : getBaseTypeOfLiteralType(rightType)), rightType) :
                         leftType;
                 case SyntaxKind.BarBarToken:
                     return getTypeFacts(leftType) & TypeFacts.Falsy ?
-                        getUnionType([removeDefinitelyFalsyTypes(leftType), rightType], UnionReduction.Subtype) :
+                        getUnionType2Sub(removeDefinitelyFalsyTypes(leftType), rightType) :
                         leftType;
                 case SyntaxKind.EqualsToken:
                     checkAssignmentOperator(rightType);
@@ -19430,7 +19445,7 @@ namespace ts {
             checkExpression(node.condition);
             const type1 = checkExpression(node.whenTrue, checkMode);
             const type2 = checkExpression(node.whenFalse, checkMode);
-            return getUnionType([type1, type2], UnionReduction.Subtype);
+            return getUnionType2Sub(type1, type2);
         }
 
         function checkTemplateExpression(node: TemplateExpression): Type {
@@ -21129,7 +21144,7 @@ namespace ts {
                 case SyntaxKind.ClassDeclaration:
                     const classSymbol = getSymbolOfNode(node.parent);
                     const classConstructorType = getTypeOfSymbol(classSymbol);
-                    expectedReturnType = getUnionType([classConstructorType, voidType]);
+                    expectedReturnType = getUnionType2Literal(classConstructorType, voidType);
                     break;
 
                 case SyntaxKind.Parameter:
@@ -21152,7 +21167,7 @@ namespace ts {
                 case SyntaxKind.SetAccessor:
                     const methodType = getTypeOfNode(node.parent);
                     const descriptorType = createTypedPropertyDescriptorType(methodType);
-                    expectedReturnType = getUnionType([descriptorType, voidType]);
+                    expectedReturnType = getUnionType2Literal(descriptorType, voidType);
                     break;
             }
 
@@ -22383,7 +22398,7 @@ namespace ts {
                     return stringType;
                 }
 
-                return getUnionType([arrayElementType, stringType], UnionReduction.Subtype);
+                return getUnionType2Sub(arrayElementType, stringType);
             }
 
             return arrayElementType;
